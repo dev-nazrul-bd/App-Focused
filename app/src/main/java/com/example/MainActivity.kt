@@ -16,6 +16,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.DatabaseReference
+import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -76,6 +81,7 @@ class MainActivity : ComponentActivity() {
     private val usagePermissionGranted = mutableStateOf(false)
     private val serviceEnabled = mutableStateOf(false)
     private val installedAppsList = mutableStateOf<List<AppInfo>>(emptyList())
+    internal val isRemoteScreenBlocked = mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,6 +93,8 @@ class MainActivity : ComponentActivity() {
         serviceEnabled.value = prefs.getBoolean("service_enabled", true)
 
         loadInstalledApps()
+        requestNotificationPermission()
+        initFirebaseRealtimeDatabase()
 
         setContent {
             MyApplicationTheme(darkTheme = false, dynamicColor = false) {
@@ -102,8 +110,23 @@ class MainActivity : ComponentActivity() {
                     ) {
                         val overlayGranted by overlayPermissionGranted
                         val usageGranted by usagePermissionGranted
+                        val remoteBlocked by isRemoteScreenBlocked
 
-                        if (!overlayGranted || !usageGranted) {
+                        if (remoteBlocked) {
+                            RemoteBlockedScreen(
+                                onContactDeveloper = {
+                                    try {
+                                        val contactIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dev-nazrul.web.app/contact"))
+                                        startActivity(contactIntent)
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Error launching developer contact link", e)
+                                    }
+                                },
+                                onExit = {
+                                    finish()
+                                }
+                            )
+                        } else if (!overlayGranted || !usageGranted) {
                             PermissionOnboardingScreen(
                                 overlayGranted = overlayGranted,
                                 usageGranted = usageGranted,
@@ -1526,5 +1549,249 @@ fun copyUriToLocal(context: Context, uri: Uri, prefix: String, extension: String
     } catch (e: Exception) {
         Log.e("MainActivity", "Error copying content URI to local storage", e)
         null
+    }
+}
+
+class FirebaseState {
+    companion object {
+        var initialized = false
+    }
+}
+
+fun MainActivity.requestNotificationPermission() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+        }
+    }
+}
+
+fun MainActivity.initFirebaseRealtimeDatabase() {
+    try {
+        val manufacturer = Build.MANUFACTURER
+        val model = Build.MODEL
+        val rawDeviceName = if (model.startsWith(manufacturer)) {
+            model
+        } else {
+            "$manufacturer $model"
+        }
+        val cleanDeviceName = rawDeviceName.replace(".", "_")
+            .replace("#", "_")
+            .replace("$", "_")
+            .replace("[", "_")
+            .replace("]", "_")
+            .trim()
+            
+        Log.d("FirebaseRTDB", "Registering device name: $cleanDeviceName")
+
+        val database = FirebaseDatabase.getInstance()
+        val deviceRef = database.getReference("App Focused").child(cleanDeviceName)
+
+        // Step 1: Upload structure if it doesn't exist
+        deviceRef.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists()) {
+                    val initialStructure = mapOf(
+                        "screen_block" to "off",
+                        "notification" to mapOf(
+                            "action" to "https://classroom.google.com",
+                            "body" to "Please return to your books immediately and lock unnecessary screens.",
+                            "photo" to "https://images.unsplash.com/photo-1497633762265-9d179a990aa6?w=600&auto=format&fit=crop",
+                            "status" to "displayed",
+                            "timestamp" to System.currentTimeMillis(),
+                            "title" to "Study Time Announcement! 📚"
+                        )
+                    )
+                    deviceRef.setValue(initialStructure)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("FirebaseRTDB", "Error on single read: ${error.message}")
+            }
+        })
+
+        // Step 2: Listen for updates
+        deviceRef.addValueEventListener(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists()) return
+
+                // Check screen_block status
+                val screenBlock = snapshot.child("screen_block").getValue(String::class.java) ?: "off"
+                isRemoteScreenBlocked.value = (screenBlock.lowercase() == "on")
+
+                // Check notification status
+                val notifNode = snapshot.child("notification")
+                if (notifNode.exists()) {
+                    val status = notifNode.child("status").getValue(String::class.java) ?: ""
+                    if (status.lowercase() == "sent") {
+                        val title = notifNode.child("title").getValue(String::class.java) ?: "Announcement!"
+                        val body = notifNode.child("body").getValue(String::class.java) ?: ""
+                        val photo = notifNode.child("photo").getValue(String::class.java) ?: ""
+                        val action = notifNode.child("action").getValue(String::class.java) ?: ""
+                        
+                        // 1. Show notification on the device
+                        showLocalNotification(title, body, photo, action)
+                        
+                        // 2. Set status to "displayed" in database
+                        deviceRef.child("notification").child("status").setValue("displayed")
+                    }
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("FirebaseRTDB", "Error listening: ${error.message}")
+            }
+        })
+
+    } catch (e: Exception) {
+        Log.e("FirebaseRTDB", "Firebase init error: ${e.message}", e)
+    }
+}
+
+fun MainActivity.showLocalNotification(title: String, body: String, photo: String, action: String) {
+    try {
+        val channelId = "parent_control_alerts"
+        val channelName = "Alert Announcements"
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                channelId,
+                channelName,
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Urgent alerts from parents"
+                enableLights(true)
+                enableVibration(true)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val intent = if (action.startsWith("http://") || action.startsWith("https://")) {
+            Intent(Intent.ACTION_VIEW, Uri.parse(action))
+        } else {
+            Intent(this, MainActivity::class.java)
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(body))
+
+        notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
+    } catch (e: Exception) {
+        Log.e("FirebaseRTDB", "Error showing notification", e)
+    }
+}
+
+@Composable
+fun RemoteBlockedScreen(onContactDeveloper: () -> Unit, onExit: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A))
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .background(Color(0xFFEF4444).copy(alpha = 0.1f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = "Device Locked",
+                    tint = Color(0xFFEF4444),
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "স্ক্রিন লক করা হয়েছে!",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Screen Blocked",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF94A3B8),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "নিরাপত্তাজনিত কারণে আপনার স্ক্রিন ব্লক করা হয়েছে। অনুগ্রহ করে ডেভেলপারের সাথে যোগাযোগ করুন বা পরবর্তীতে চেষ্টা করুন।",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFFCBD5E1),
+                textAlign = TextAlign.Center,
+                lineHeight = 24.sp
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = onContactDeveloper,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF4F46E5),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            ) {
+                Icon(Icons.Default.ContactSupport, contentDescription = "Contact Dev")
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "ডেভেলপারের সাথে যোগাযোগ করুন",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = onExit,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color(0xFF94A3B8)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            ) {
+                Text(
+                    text = "অ্যাপ বন্ধ করুন (Exit App)",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+            }
+        }
     }
 }
