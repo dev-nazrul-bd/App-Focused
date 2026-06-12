@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Outer Shadow of Shield -->
+    <path
+        android:fillColor="#22000000"
+        android:pathData="M54,30 L28,40 L28,60 C28,74 41,84 54,88 C67,84 80,74 80,60 L80,40 Z" />
+
+    <!-- Main Shield Bodies -->
+    <path
+        android:pathData="M54,28 L28,38 L28,58 C28,72 41,82 54,86 C67,82 80,72 80,58 L80,38 Z"
+        android:fillColor="#4F46E5" />
+
+    <!-- Inner Shield Shimmer / Left half highlight -->
+    <path
+        android:pathData="M54,28 L28,38 L28,58 C28,72 41,82 54,86 Z"
+        android:fillColor="#6366F1" />
+
+    <!-- Inner Target Ring/Focus Area -->
+    <path
+        android:pathData="M54,42 A12,12 0 1 0 54,66 A12,12 0 1 0 54,42 Z"
+        android:fillColor="#FACC15" />
+        
+    <path
+        android:pathData="M54,46 A8,8 0 1 1 54,62 A8,8 0 1 1 54,46 Z"
+        android:fillColor="#1E1B4B" />
+
+    <!-- Glowing Centered Core Lens -->
+    <path
+        android:pathData="M54,50 A4,4 0 1 0 54,58 A4,4 0 1 0 54,50 Z"
+        android:fillColor="#38BDF8" />
+</vector>

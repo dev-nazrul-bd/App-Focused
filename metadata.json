@@ -1,0 +1,6 @@
+{
+  "name": "App Focused",
+  "description": "App Focused lets you schedule study/work times and block distracting apps, displaying custom motivational media, links, or PDFs when blocked apps are opened.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
