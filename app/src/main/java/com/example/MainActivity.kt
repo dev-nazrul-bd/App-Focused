@@ -161,6 +161,8 @@ class MainActivity : ComponentActivity() {
         checkPermissions()
         // Sync back-end service status based on shared preference
         syncBlockerService()
+        val localPrefs = getSharedPreferences("app_focused_prefs", Context.MODE_PRIVATE)
+        isRemoteScreenBlocked.value = localPrefs.getBoolean("remote_screen_blocked", false)
     }
 
     private fun checkPermissions() {
@@ -850,14 +852,16 @@ fun AddEditScheduleDialog(
     var name by remember { mutableStateOf(schedule?.name ?: "Focus Schedule") }
     
     // Start Time states
-    var startHour by remember { mutableStateOf(schedule?.startHour ?: 8) }
+    val initialStartHour = schedule?.startHour ?: 8
+    var startHour by remember { mutableStateOf(if (initialStartHour > 12) initialStartHour - 12 else if (initialStartHour == 0) 12 else initialStartHour) }
     var startMin by remember { mutableStateOf(schedule?.startMinute ?: 0) }
-    var startAmPm by remember { mutableStateOf(if (startHour >= 12) "PM" else "AM") }
+    var startAmPm by remember { mutableStateOf(if (initialStartHour >= 12) "PM" else "AM") }
     
     // End Time states
-    var endHour by remember { mutableStateOf(schedule?.endHour ?: 17) }
+    val initialEndHour = schedule?.endHour ?: 17
+    var endHour by remember { mutableStateOf(if (initialEndHour > 12) initialEndHour - 12 else if (initialEndHour == 0) 12 else initialEndHour) }
     var endMin by remember { mutableStateOf(schedule?.endMinute ?: 0) }
-    var endAmPm by remember { mutableStateOf(if (endHour >= 12) "PM" else "AM") }
+    var endAmPm by remember { mutableStateOf(if (initialEndHour >= 12) "PM" else "AM") }
     
     // Custom media action choices
     var blockType by remember { mutableStateOf(schedule?.blockType ?: "DEFAULT") }
@@ -1033,7 +1037,7 @@ fun AddEditScheduleDialog(
                                         Spacer(modifier = Modifier.height(8.dp))
                                         
                                         TimeCompactPicker(
-                                            hour = if (startHour > 12) startHour - 12 else if (startHour == 0) 12 else startHour,
+                                            hour = startHour,
                                             minute = startMin,
                                             ampm = startAmPm,
                                             onTimeSelected = { h, m, ap ->
@@ -1056,7 +1060,7 @@ fun AddEditScheduleDialog(
                                         Spacer(modifier = Modifier.height(8.dp))
                                         
                                         TimeCompactPicker(
-                                            hour = if (endHour > 12) endHour - 12 else if (endHour == 0) 12 else endHour,
+                                            hour = endHour,
                                             minute = endMin,
                                             ampm = endAmPm,
                                             onTimeSelected = { h, m, ap ->
@@ -1617,7 +1621,10 @@ fun MainActivity.initFirebaseRealtimeDatabase() {
 
                 // Check screen_block status
                 val screenBlock = snapshot.child("screen_block").getValue(String::class.java) ?: "off"
-                isRemoteScreenBlocked.value = (screenBlock.lowercase() == "on")
+                val isBlocked = (screenBlock.lowercase() == "on")
+                isRemoteScreenBlocked.value = isBlocked
+                val localPrefs = getSharedPreferences("app_focused_prefs", Context.MODE_PRIVATE)
+                localPrefs.edit().putBoolean("remote_screen_blocked", isBlocked).apply()
 
                 // Check notification status
                 val notifNode = snapshot.child("notification")
@@ -1695,7 +1702,7 @@ fun MainActivity.showLocalNotification(title: String, body: String, photo: Strin
 }
 
 @Composable
-fun RemoteBlockedScreen(onContactDeveloper: () -> Unit, onExit: () -> Unit) {
+private fun RemoteBlockedScreen(onContactDeveloper: () -> Unit, onExit: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()

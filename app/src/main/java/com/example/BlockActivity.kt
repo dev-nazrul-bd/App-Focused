@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -15,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.ContactSupport
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -143,12 +146,32 @@ fun BlockScreenContent(
     schedule: BlockSchedule?,
     onHomeClicked: () -> Unit
 ) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("app_focused_prefs", Context.MODE_PRIVATE) }
+    val isRemoteBlocked = remember { prefs.getBoolean("remote_screen_blocked", false) }
+
     if (schedule == null) {
-        DefaultBlockLayout(
-            title = "Focused Period Active",
-            message = "This app is currently blocked. Take a moment to focus on your real-world tasks!",
-            onHomeClicked = onHomeClicked
-        )
+        if (isRemoteBlocked) {
+            RemoteBlockedScreen(
+                onContactDeveloper = {
+                    try {
+                        val contactIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dev-nazrul.web.app/contact")).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        context.startActivity(contactIntent)
+                    } catch (e: Exception) {
+                        Log.e("BlockActivity", "Error launching developer contact link", e)
+                    }
+                },
+                onExit = onHomeClicked
+            )
+        } else {
+            DefaultBlockLayout(
+                title = "Focused Period Active",
+                message = "This app is currently blocked. Take a moment to focus on your real-world tasks!",
+                onHomeClicked = onHomeClicked
+            )
+        }
     } else {
         when (schedule.blockType.uppercase()) {
             "IMAGE" -> {
@@ -634,6 +657,108 @@ fun LocalPdfRenderer(filePath: String) {
                         contentScale = ContentScale.FillWidth
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteBlockedScreen(onContactDeveloper: () -> Unit, onExit: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A))
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .background(Color(0xFFEF4444).copy(alpha = 0.1f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = "Device Locked",
+                    tint = Color(0xFFEF4444),
+                    modifier = Modifier.size(40.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "স্ক্রিন লক করা হয়েছে!",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Screen Blocked",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF94A3B8),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "নিরাপত্তাজনিত কারণে আপনার স্ক্রিন ব্লক করা হয়েছে। অনুগ্রহ করে ডেভেলপারের সাথে যোগাযোগ করুন বা পরবর্তীতে চেষ্টা করুন।",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color(0xFFCBD5E1),
+                textAlign = TextAlign.Center,
+                lineHeight = 24.sp
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = onContactDeveloper,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF4F46E5),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            ) {
+                Icon(Icons.Default.ContactSupport, contentDescription = "Contact Dev")
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "ডেভেলপারের সাথে যোগাযোগ করুন",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = onExit,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color(0xFF94A3B8)
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+            ) {
+                Text(
+                    text = "অ্যাপ বন্ধ করুন (Exit App)",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
             }
         }
     }

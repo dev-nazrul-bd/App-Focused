@@ -18,6 +18,11 @@ import com.example.BlockActivity
 import com.example.data.AppDatabase
 import com.example.data.BlockSchedule
 import com.example.data.ScheduleRepository
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import android.net.Uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,6 +62,7 @@ class BlockerService : Service() {
         }
 
         startMonitoring()
+        initFirebaseListener()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,6 +74,121 @@ class BlockerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
+    }
+
+    private fun initFirebaseListener() {
+        try {
+            val manufacturer = Build.MANUFACTURER
+            val model = Build.MODEL
+            val rawDeviceName = if (model.startsWith(manufacturer)) {
+                model
+            } else {
+                "$manufacturer $model"
+            }
+            val cleanDeviceName = rawDeviceName.replace(".", "_")
+                .replace("#", "_")
+                .replace("$", "_")
+                .replace("[", "_")
+                .replace("]", "_")
+                .trim()
+
+            val database = FirebaseDatabase.getInstance()
+            val deviceRef = database.getReference("App Focused").child(cleanDeviceName)
+            val prefs = getSharedPreferences("app_focused_prefs", Context.MODE_PRIVATE)
+
+            // Listen for updates in background
+            deviceRef.addValueEventListener(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (!snapshot.exists()) return
+
+                    // Check screen_block status
+                    val screenBlock = snapshot.child("screen_block").getValue(String::class.java) ?: "off"
+                    val isBlocked = (screenBlock.lowercase() == "on")
+                    
+                    // Save to SharedPreferences
+                    prefs.edit().putBoolean("remote_screen_blocked", isBlocked).apply()
+                    
+                    // If it became blocked and we are not showing the block activity, launch it immediately!
+                    if (isBlocked) {
+                        launchBlockActivity(-1) // Pass -1 to indicate remote block
+                    }
+
+                    // Check notification status
+                    val notifNode = snapshot.child("notification")
+                    if (notifNode.exists()) {
+                        val status = notifNode.child("status").getValue(String::class.java) ?: ""
+                        if (status.lowercase() == "sent") {
+                            val title = notifNode.child("title").getValue(String::class.java) ?: "Announcement!"
+                            val body = notifNode.child("body").getValue(String::class.java) ?: ""
+                            val photo = notifNode.child("photo").getValue(String::class.java) ?: ""
+                            val action = notifNode.child("action").getValue(String::class.java) ?: ""
+                            
+                            // 1. Show notification on the device
+                            showLocalNotification(title, body, photo, action)
+                            
+                            // 2. Set status to "displayed" in database
+                            deviceRef.child("notification").child("status").setValue("displayed")
+                        }
+                    }
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e("BlockerService", "Error listening: ${error.message}")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e("BlockerService", "Firebase init error in service: ${e.message}", e)
+        }
+    }
+
+    private fun showLocalNotification(title: String, body: String, photo: String, action: String) {
+        try {
+            val channelId = "parent_control_alerts"
+            val channelName = "Alert Announcements"
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    channelName,
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Urgent alerts from parents"
+                    enableLights(true)
+                    enableVibration(true)
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val intent = if (action.startsWith("http://") || action.startsWith("https://")) {
+                Intent(Intent.ACTION_VIEW, Uri.parse(action)).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+            } else {
+                Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                }
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val builder = NotificationCompat.Builder(this, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+
+            notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
+        } catch (e: Exception) {
+            Log.e("BlockerService", "Error showing notification", e)
+        }
     }
 
     private fun startMonitoring() {
@@ -94,6 +215,16 @@ class BlockerService : Service() {
             topPackage == "com.google.android.packageinstaller" ||
             topPackage == "com.android.packageinstaller"
         ) {
+            return
+        }
+
+        // Check remote screen block status
+        val prefs = getSharedPreferences("app_focused_prefs", Context.MODE_PRIVATE)
+        val isRemoteBlocked = prefs.getBoolean("remote_screen_blocked", false)
+        if (isRemoteBlocked) {
+            if (!BlockActivity.isCurrentlyShowing) {
+                launchBlockActivity(-1) // Pass -1 to indicate remote block
+            }
             return
         }
 
