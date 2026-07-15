@@ -191,11 +191,50 @@ class BlockerService : Service() {
         }
     }
 
+    private fun shouldSleep(activeSchedules: List<BlockSchedule>): Boolean {
+        if (activeSchedules.isEmpty()) return true
+
+        val now = Calendar.getInstance()
+        val currentHour = now.get(Calendar.HOUR_OF_DAY)
+        val currentMin = now.get(Calendar.MINUTE)
+        val currentTotal = currentHour * 60 + currentMin
+
+        for (schedule in activeSchedules) {
+            val startHour = schedule.startHour
+            val startMinute = schedule.startMinute
+            val endHour = schedule.endHour
+            val endMinute = schedule.endMinute
+
+            val startTotal = startHour * 60 + startMinute
+            val endTotal = endHour * 60 + endMinute
+            val preWakeStartTotal = (startTotal - 20 + 1440) % 1440
+
+            val inMonitoringPeriod = if (preWakeStartTotal <= endTotal) {
+                currentTotal in preWakeStartTotal..endTotal
+            } else {
+                currentTotal >= preWakeStartTotal || currentTotal <= endTotal
+            }
+
+            if (inMonitoringPeriod) {
+                return false // We should NOT sleep, as we are in an active monitoring period
+            }
+        }
+        return true // None of the schedules are in their monitoring period, we can sleep!
+    }
+
     private fun startMonitoring() {
         serviceScope.launch {
             while (true) {
                 try {
-                    checkAndBlockTopApp()
+                    val activeSchedules = repository.getActiveSchedules()
+                    if (shouldSleep(activeSchedules)) {
+                        Log.d("BlockerService", "No schedules currently active. Scheduling next alarm and sleeping.")
+                        AlarmScheduler.scheduleNextWakeup(this@BlockerService, activeSchedules)
+                        stopSelf()
+                        break
+                    }
+
+                    checkAndBlockTopApp(activeSchedules)
                 } catch (e: Exception) {
                     Log.e("BlockerService", "Error during monitoring block check", e)
                 }
@@ -204,7 +243,7 @@ class BlockerService : Service() {
         }
     }
 
-    private suspend fun checkAndBlockTopApp() {
+    private suspend fun checkAndBlockTopApp(activeSchedules: List<BlockSchedule>) {
         val topPackage = getTopPackageName(this) ?: return
         
         // Safety guard checks - never block App Focused, standard settings, or the launcher system UI
@@ -228,7 +267,6 @@ class BlockerService : Service() {
             return
         }
 
-        val activeSchedules = repository.getActiveSchedules()
         if (activeSchedules.isEmpty()) return
 
         for (schedule in activeSchedules) {

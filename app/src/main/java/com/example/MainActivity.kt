@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.widget.ImageView
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
     // Live permission states updated onResume
     private val overlayPermissionGranted = mutableStateOf(false)
     private val usagePermissionGranted = mutableStateOf(false)
+    private val batteryOptimizationIgnored = mutableStateOf(false)
     private val serviceEnabled = mutableStateOf(false)
     private val installedAppsList = mutableStateOf<List<AppInfo>>(emptyList())
     internal val isRemoteScreenBlocked = mutableStateOf(false)
@@ -135,10 +137,13 @@ class MainActivity : ComponentActivity() {
                             )
                         } else {
                             val schedulesState = repository.allSchedules.collectAsState(initial = emptyList())
+                            val batteryOptimized by batteryOptimizationIgnored
                             AppFocusedDashboard(
                                 schedules = schedulesState.value,
                                 installedApps = installedAppsList.value,
                                 serviceActive = serviceEnabled.value,
+                                batteryOptimizationIgnored = batteryOptimized,
+                                onRequestBatteryOptimization = { requestIgnoreBatteryOptimization() },
                                 onToggleService = { active ->
                                     toggleBlockerService(active)
                                 },
@@ -168,6 +173,32 @@ class MainActivity : ComponentActivity() {
     private fun checkPermissions() {
         overlayPermissionGranted.value = Settings.canDrawOverlays(this)
         usagePermissionGranted.value = hasUsageStatsPermission()
+        batteryOptimizationIgnored.value = isBatteryOptimizationIgnored()
+    }
+
+    private fun isBatteryOptimizationIgnored(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } else {
+            true
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimization() {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                startActivity(intent)
+            } catch (ex: Exception) {
+                Log.e("MainActivity", "Error launching battery optimization settings", ex)
+            }
+        }
     }
 
     private fun hasUsageStatsPermission(): Boolean {
@@ -237,6 +268,11 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             stopService(serviceIntent)
+            try {
+                com.example.service.AlarmScheduler.scheduleNextWakeup(this, emptyList())
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to cancel wakeup alarms", e)
+            }
         }
     }
 
@@ -462,6 +498,8 @@ fun AppFocusedDashboard(
     schedules: List<BlockSchedule>,
     installedApps: List<AppInfo>,
     serviceActive: Boolean,
+    batteryOptimizationIgnored: Boolean,
+    onRequestBatteryOptimization: () -> Unit,
     onToggleService: (Boolean) -> Unit,
     onAddSchedule: (BlockSchedule) -> Unit,
     onDeleteSchedule: (BlockSchedule) -> Unit
@@ -562,6 +600,61 @@ fun AppFocusedDashboard(
                                     checkedTrackColor = MaterialTheme.colorScheme.primary
                                 )
                             )
+                        }
+                    }
+
+                    if (!batteryOptimizationIgnored) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Color(0xFFFEF3F2),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFECDCA)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    .fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = Color(0xFFD92D20)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "Enable Unrestricted Background",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = Color(0xFFB42318)
+                                        )
+                                        Text(
+                                            text = "Keep background monitoring highly active and efficient.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFFB42318).copy(alpha = 0.9f)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = onRequestBatteryOptimization,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFD92D20),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 1.dp)
+                                ) {
+                                    Text("Fix", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
@@ -849,26 +942,26 @@ fun AddEditScheduleDialog(
     onDismiss: () -> Unit,
     onSave: (BlockSchedule) -> Unit
 ) {
-    var name by remember { mutableStateOf(schedule?.name ?: "Focus Schedule") }
+    var name by remember(schedule) { mutableStateOf(schedule?.name ?: "Focus Schedule") }
     
     // Start Time states
     val initialStartHour = schedule?.startHour ?: 8
-    var startHour by remember { mutableStateOf(if (initialStartHour > 12) initialStartHour - 12 else if (initialStartHour == 0) 12 else initialStartHour) }
-    var startMin by remember { mutableStateOf(schedule?.startMinute ?: 0) }
-    var startAmPm by remember { mutableStateOf(if (initialStartHour >= 12) "PM" else "AM") }
+    var startHour by remember(schedule) { mutableStateOf(if (initialStartHour > 12) initialStartHour - 12 else if (initialStartHour == 0) 12 else initialStartHour) }
+    var startMin by remember(schedule) { mutableStateOf(schedule?.startMinute ?: 0) }
+    var startAmPm by remember(schedule) { mutableStateOf(if (initialStartHour >= 12) "PM" else "AM") }
     
     // End Time states
     val initialEndHour = schedule?.endHour ?: 17
-    var endHour by remember { mutableStateOf(if (initialEndHour > 12) initialEndHour - 12 else if (initialEndHour == 0) 12 else initialEndHour) }
-    var endMin by remember { mutableStateOf(schedule?.endMinute ?: 0) }
-    var endAmPm by remember { mutableStateOf(if (initialEndHour >= 12) "PM" else "AM") }
+    var endHour by remember(schedule) { mutableStateOf(if (initialEndHour > 12) initialEndHour - 12 else if (initialEndHour == 0) 12 else initialEndHour) }
+    var endMin by remember(schedule) { mutableStateOf(schedule?.endMinute ?: 0) }
+    var endAmPm by remember(schedule) { mutableStateOf(if (initialEndHour >= 12) "PM" else "AM") }
     
     // Custom media action choices
-    var blockType by remember { mutableStateOf(schedule?.blockType ?: "DEFAULT") }
-    var blockContent by remember { mutableStateOf(schedule?.blockContent ?: "") }
+    var blockType by remember(schedule) { mutableStateOf(schedule?.blockType ?: "DEFAULT") }
+    var blockContent by remember(schedule) { mutableStateOf(schedule?.blockContent ?: "") }
     
     // Set of selected apps list packages
-    val selectedPackages = remember { mutableStateListOf<String>().apply { 
+    val selectedPackages = remember(schedule) { mutableStateListOf<String>().apply { 
         schedule?.blockedApps?.let { addAll(it) } 
     } }
 
